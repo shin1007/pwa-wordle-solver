@@ -1,7 +1,7 @@
 import { ANSWERS, ALLOWED } from './words.js';
 import { OPENING_RANKING, OPENING_RANKING_HARD } from './opening.js';
 import { colorsToPattern } from './solver.js';
-import { HARD_BOOK } from './book.js';
+import { NORMAL_BOOK, HARD_BOOK } from './book.js';
 
 const wordCountSpan = document.getElementById('word-count');
 const bestWordSpan = document.getElementById('best-word');
@@ -24,9 +24,8 @@ try {
     hardMode = localStorage.getItem('hardMode') === 'true';
 } catch (e) { /* ストレージが使えなくても動作させる */ }
 
-// モードごとの最初に入れておく単語（全正解でのシミュレーション結果から選定）
-// 通常: tarse, ハード: 定跡（book.js）の1語目
-const STARTING_WORDS = { normal: ['tarse'], hard: [HARD_BOOK.opener] };
+// モードごとの最初に入れておく単語（全正解でのシミュレーション結果から選定した、定跡（book.js）の1語目）
+const STARTING_WORDS = { normal: [NORMAL_BOOK.opener], hard: [HARD_BOOK.opener] };
 
 // 表示する「おすすめ」の件数
 const RANKING_DISPLAY_COUNT = 20;
@@ -276,14 +275,15 @@ async function runRanking(request) {
         const { Solver } = await import('./solver.js');
         mainThreadSolver = new Solver();
     }
-    const result = mainThreadSolver.rank(request.history, { hard: request.hard, limit: 30, book: HARD_BOOK });
+    const result = mainThreadSolver.rank(request.history, { hard: request.hard, limit: 30, book: request.hard ? HARD_BOOK : NORMAL_BOOK });
     renderRanking({ id: request.id, ...result });
 }
 
-// ハードモードの1手目は定跡の1語目を先頭にする
-function hardOpeningRanking() {
-    const opener = { word: HARD_BOOK.opener, expected: HARD_BOOK.expected, isCandidate: ANSWERS.includes(HARD_BOOK.opener), fromBook: true };
-    return [opener, ...OPENING_RANKING_HARD.filter(r => r.word !== opener.word)];
+// 1手目は定跡の1語目を先頭にする
+function openingRanking() {
+    const book = hardMode ? HARD_BOOK : NORMAL_BOOK;
+    const opener = { word: book.opener, expected: book.expected, isCandidate: ANSWERS.includes(book.opener), fromBook: true };
+    return [opener, ...(hardMode ? OPENING_RANKING_HARD : OPENING_RANKING).filter(r => r.word !== opener.word)];
 }
 
 // 候補単語とおすすめランキングを画面に表示する関数
@@ -293,7 +293,7 @@ function displayPossibleWords() {
     if (history.length === 0) {
         // 1手目は事前計算済みのランキングを使う
         latestRequest = null;
-        renderRanking({ id, candidates: ANSWERS, ranking: hardMode ? hardOpeningRanking() : OPENING_RANKING });
+        renderRanking({ id, candidates: ANSWERS, ranking: openingRanking() });
         return;
     }
     bestWordSpan.textContent = 'thinking...';

@@ -3,7 +3,7 @@
 //      元データ: https://github.com/alex1770/wordle の wordlist_nyt20230701_hidden（正解候補）と
 //      wordlist_nyt20220830_all から正解候補を除いたもの（入力可能）。MIT License
 //   2. words.js + solver.js → opening.js（1手目のランキング。計算が重いので事前計算）
-// 単語リストや solver.js を変更したら再実行し、続けて scripts/build-book.mjs（ハードモードの定跡）も作り直す。
+// 単語リストや solver.js を変更したら再実行し、続けて scripts/build-book.mjs normal / hard（定跡）も作り直す。
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const root = new URL('../', import.meta.url);

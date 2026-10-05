@@ -20,21 +20,16 @@ export const DEFAULT_PARAMS = {
     // 1文字違いの塊（_ATCH など）が推測後も分かれずに残る場合の補正の重み（0で無効）
     clusterWeightNormal: 1,
     clusterWeightHard: 1,
+    // 残り k 語（3語以上）を解く手数の見積もり a + b * ln(k) の係数（ソルバー自身の実測に合わせたもの）
+    costNormal: [1.4, 0.28],
+    costHard: [1.5, 0.29],
 };
 
-/** 1文字違いの s 語が塊のまま残ったとき、1語ずつ試すしかない場合の手数と見積もりの差 */
-function clusterExtra(s) {
-    return Math.max(0, (s + 1) / 2 - estimateCost(s));
-}
-
-/**
- * 残り k 語を解くのに必要な推測回数の見積もり（次の1手を含む）。
- * 1語なら1手、2語なら 1.5 手、それ以上は経験的な近似式。
- */
-function estimateCost(k) {
-    if (k <= 1) return 1;
-    if (k === 2) return 1.5;
-    return 1.6 + 0.24 * Math.log(k);
+/** 評価済みの推測語の並び順（見積もり手数、同点なら候補単語・エントロピー優先） */
+function compareScored(x, y) {
+    return x.expected - y.expected
+        || (y.isCandidate - x.isCandidate)
+        || (y.entropy - x.entropy);
 }
 
 /** 色の配列（'gray' | 'yellow' | 'green'）をパターン番号に変換 */
@@ -55,16 +50,32 @@ export class Solver {
             for (let j = 0; j < 5; j++) this.codes[i * 5 + j] = w.charCodeAt(j) - CODE_A;
         });
         this.letterCount = new Int8Array(26);
-        this.patternScratch = new Int16Array(this.words.length);
         this.bucketSizes = new Int32Array(PATTERN_COUNT);
-        this._cache = null;
+        this.touched = new Int32Array(PATTERN_COUNT);
+        this._search = null;
         this.params = DEFAULT_PARAMS;
+        this.cost = DEFAULT_PARAMS.costNormal;
+    }
+
+    /**
+     * 残り k 語を解くのに必要な推測回数の見積もり（次の1手を含む）。
+     * 1語なら1手、2語なら 1.5 手、それ以上は経験的な近似式。
+     */
+    estimateCost(k) {
+        if (k <= 1) return 1;
+        if (k === 2) return 1.5;
+        return this.cost[0] + this.cost[1] * Math.log(k);
+    }
+
+    /** 1文字違いの s 語が塊のまま残ったとき、1語ずつ試すしかない場合の手数と見積もりの差 */
+    clusterExtra(s) {
+        return Math.max(0, (s + 1) / 2 - this.estimateCost(s));
     }
 
     /** これまで turn 手使った状態から k 語を解く見積もり手数（ペナルティ込み） */
     leafCost(k, turn) {
         const { maxGuesses, failPenalty, tailTurn, tailPenalty } = this.params;
-        const base = estimateCost(k);
+        const base = this.estimateCost(k);
         const end = turn + base;
         let cost = base;
         if (end > maxGuesses) cost += (end - maxGuesses) * failPenalty;
@@ -76,6 +87,18 @@ export class Solver {
     guessCost(turn) {
         const { maxGuesses, failPenalty, tailTurn, tailPenalty } = this.params;
         return 1 + (turn > maxGuesses ? failPenalty : 0) + (turn > tailTurn ? tailPenalty : 0);
+    }
+
+    /** leafCost(k, turn) を k = 0..候補数 について並べた表（探索中に使い回す） */
+    _leafTable(turn) {
+        const tables = this._search.leafTables;
+        let table = tables[turn];
+        if (!table) {
+            table = new Float64Array(this._search.cands.length + 1);
+            for (let k = 0; k < table.length; k++) table[k] = this.leafCost(k, turn);
+            tables[turn] = table;
+        }
+        return table;
     }
 
     /**
@@ -121,25 +144,6 @@ export class Solver {
         return p;
     }
 
-    /** 先読み中は (推測語, 候補) のフィードバックを推測語ごとにキャッシュして再利用する */
-    _startCache(cands) {
-        const col = new Int32Array(this.words.length).fill(-1);
-        cands.forEach((a, i) => { col[a] = i; });
-        this._cache = { cands, col, rows: new Map() };
-    }
-
-    _cachedFeedback(g, a) {
-        const cache = this._cache;
-        if (!cache || cache.col[a] < 0) return this.feedback(g, a);
-        let row = cache.rows.get(g);
-        if (!row) {
-            row = new Uint8Array(cache.cands.length);
-            cache.cands.forEach((c, i) => { row[i] = this.feedback(g, c); });
-            cache.rows.set(g, row);
-        }
-        return row[cache.col[a]];
-    }
-
     /** 履歴 [{word, pattern}] と矛盾しない単語番号の配列（基本は正解リストから） */
     candidates(history) {
         const ids = history.map(h => ({ g: this.index.get(h.word), p: h.pattern }))
@@ -166,47 +170,112 @@ export class Solver {
             if (v > 0) seen[l]++;
         }
         for (let l = 0; l < 26; l++) if (seen[l] > min[l]) min[l] = seen[l];
-        return { green, min };
+        return { green, min, key: `${green.join(',')}/${min.join('')}` };
     }
 
     emptyConstraint() {
-        return { green: new Int8Array(5).fill(-1), min: new Int8Array(26) };
+        return { green: new Int8Array(5).fill(-1), min: new Int8Array(26), key: '' };
     }
 
     /** ハードモードで単語 g が入力可能か（緑は同じ位置、黄・緑の文字は必要数含む） */
     hardOk(g, cons) {
-        const c = this.codes;
+        const c = this.codes, gi = g * 5;
         for (let i = 0; i < 5; i++) {
-            if (cons.green[i] >= 0 && c[g * 5 + i] !== cons.green[i]) return false;
+            if (cons.green[i] >= 0 && c[gi + i] !== cons.green[i]) return false;
         }
-        const cnt = new Int8Array(26);
-        for (let i = 0; i < 5; i++) cnt[c[g * 5 + i]]++;
-        for (let l = 0; l < 26; l++) if (cnt[l] < cons.min[l]) return false;
+        const min = cons.min;
+        for (let l = 0; l < 26; l++) {
+            if (min[l] === 0) continue;
+            let n = 0;
+            for (let i = 0; i < 5; i++) if (c[gi + i] === l) n++;
+            if (n < min[l]) return false;
+        }
         return true;
     }
 
     // ---- 評価 ----
+    //
+    // 探索中（this._search）は、候補単語を rank 時点の候補 cands の添字（位置）で表し、
+    // 推測語 g ごとのフィードバックの行 rows[g * n + 位置] を一度だけ計算して使い回す。
+    // 同じ部分問題（候補・深さ・手数・制約が同じ）の答えはメモして再利用する。
 
-    /** これまで turn 手使った状態で推測語 g を出したときの見積もり平均手数（1パス・先読みなし） */
-    heuristic(g, cands, turn, useCache = false, clusters = null) {
-        const sizes = this.bucketSizes, pats = this.patternScratch;
-        const touched = [];
-        for (let i = 0; i < cands.length; i++) {
-            const p = useCache ? this._cachedFeedback(g, cands[i]) : this.feedback(g, cands[i]);
-            pats[i] = p;
-            if (sizes[p]++ === 0) touched.push(p);
+    /**
+     * 文字 l を i 文字目に置いたときの、各候補に対するパターンの i 桁目の値の表（posValue[(i * 26 + l) * n + 位置]）。
+     * 同じ文字を2回以上含まない推測語なら、黄色は「正解がその文字を含むか」だけで決まるので、
+     * パターンはこの表の5つの値の和になる。
+     */
+    _buildPosValue(cands) {
+        const n = cands.length, c = this.codes;
+        const table = new Uint8Array(5 * 26 * n);
+        for (let x = 0; x < n; x++) {
+            const ai = cands[x] * 5;
+            let mask = 0;
+            for (let j = 0; j < 5; j++) mask |= 1 << c[ai + j];
+            for (let i = 0, w = 1; i < 5; i++, w *= 3) {
+                for (let l = 0; l < 26; l++) {
+                    table[(i * 26 + l) * n + x] = c[ai + i] === l ? 2 * w : (mask >> l) & 1 ? w : 0;
+                }
+            }
         }
-        const n = cands.length;
+        return table;
+    }
+
+    /**
+     * 推測語 g の行（cands 全体に対するフィードバック）の先頭位置。未計算なら計算する。
+     * どの候補にも含まれない文字（必ず灰色）だけが違う推測語は行が同じなので、1つの行を共有する。
+     */
+    _row(g) {
+        const s = this._search;
+        if (s.rowOff[g] >= 0) return s.rowOff[g];
+        const n = s.cands.length, rows = s.rows, c = this.codes, gi = g * 5;
+        let key = 0, mask = 0, repeated = false;
+        for (let i = 0; i < 5; i++) {
+            const l = c[gi + i], bit = 1 << l;
+            if (!(s.liveMask & bit)) { key = key * 27 + 26; continue; }
+            key = key * 27 + l;
+            if (mask & bit) repeated = true;
+            mask |= bit;
+        }
+        const same = s.rowByKey.get(key);
+        if (same !== undefined) return (s.rowOff[g] = same);
+        const off = g * n;
+        if (repeated) {
+            const cands = s.cands;
+            for (let i = 0; i < n; i++) rows[off + i] = this.feedback(g, cands[i]);
+        } else {
+            // 灰色の文字の表の値は全部 0 なので、同じ灰色の文字が重なっていてもよい
+            const t = s.posValue;
+            const o0 = c[gi] * n, o1 = (26 + c[gi + 1]) * n, o2 = (52 + c[gi + 2]) * n,
+                o3 = (78 + c[gi + 3]) * n, o4 = (104 + c[gi + 4]) * n;
+            for (let i = 0; i < n; i++) rows[off + i] = t[o0 + i] + t[o1 + i] + t[o2 + i] + t[o3 + i] + t[o4 + i];
+        }
+        s.rowByKey.set(key, off);
+        return (s.rowOff[g] = off);
+    }
+
+    /**
+     * パターン列 pats[0..m) を返す推測語を turn 手目の後に出したときの見積もり平均手数（1パス・先読みなし）。
+     * エントロピーは this._entropy に入れる。
+     */
+    _evaluate(pats, m, turn, clusters) {
+        const sizes = this.bucketSizes, touched = this.touched;
+        let t = 0;
+        for (let i = 0; i < m; i++) {
+            const p = pats[i];
+            if (sizes[p]++ === 0) touched[t++] = p;
+        }
+        const leaf = this._leafTable(turn + 1);
         let total = 0, entropy = 0;
-        for (const p of touched) {
-            const k = sizes[p];
+        for (let j = 0; j < t; j++) {
+            const p = touched[j], k = sizes[p];
             sizes[p] = 0;
-            entropy -= (k / n) * Math.log2(k / n);
+            entropy -= (k / m) * Math.log2(k / m);
             if (p === ALL_GREEN) continue;
-            total += k * this.leafCost(k, turn + 1);
+            total += k * leaf[k];
         }
         if (clusters) total += this.clusterWeight * this._clusterPenalty(clusters, pats);
-        return { expected: this.guessCost(turn + 1) + total / n, entropy };
+        this._entropy = entropy;
+        return this.guessCost(turn + 1) + total / m;
     }
 
     /** 推測後も同じパターンにまとまって残る、塊の語に対する追加手数の合計 */
@@ -223,79 +292,112 @@ export class Solver {
                     if (y < x) { first = false; break; }
                     same++;
                 }
-                if (first && same >= 3) penalty += same * clusterExtra(same);
+                if (first && same >= 3) penalty += same * this.clusterExtra(same);
             }
         }
         return penalty;
     }
 
-    /** 推測語 g で候補を分割したバケツ（パターン → 単語番号配列） */
-    partition(g, cands) {
-        const buckets = new Map();
-        for (const a of cands) {
-            const p = this._cachedFeedback(g, a);
-            let b = buckets.get(p);
-            if (!b) buckets.set(p, b = []);
-            b.push(a);
-        }
-        return buckets;
-    }
-
-    /** 推測語を見積もり順に並べる（同点なら候補単語・エントロピー優先） */
-    _scorePool(pool, cands, turn, useCache = false) {
-        const candSet = new Set(cands);
-        const clusters = this.clusterWeight > 0 ? this.clusters(cands) : [];
+    /**
+     * 部分問題（候補の位置 pos）で試す推測語を評価し、見積もり順の上位 k 件を返す。
+     * 試すのは候補単語と extra（ハードモードでは入力可能なものだけ）。
+     */
+    _scoreSub(pos, hard, cons, turn, k) {
+        const s = this._search, m = pos.length, pats = s.pats, stamp = ++s.stamp;
+        const words = Array.from(pos, i => s.cands[i]);
+        const clusters = this.clusterWeight > 0 ? this.clusters(words) : [];
         const useClusters = clusters.length > 0 ? clusters : null;
-        return pool.map(g => ({ g, isCandidate: candSet.has(g), ...this.heuristic(g, cands, turn, useCache, useClusters) }))
-            .sort((x, y) => x.expected - y.expected
-                || (y.isCandidate - x.isCandidate)
-                || (y.entropy - x.entropy));
+        for (const g of words) s.mark[g] = stamp;
+        const top = [];
+        const consider = (g, isCandidate) => {
+            if (hard && !this.hardOk(g, cons)) return;
+            const off = this._row(g), rows = s.rows;
+            for (let i = 0; i < m; i++) pats[i] = rows[off + pos[i]];
+            const item = { g, isCandidate, expected: this._evaluate(pats, m, turn, useClusters), entropy: this._entropy };
+            // 安定な挿入で上位 k 件を保つ（同点なら先に試した語が前）
+            let i = top.length;
+            while (i > 0 && compareScored(item, top[i - 1]) < 0) i--;
+            if (i >= k) return;
+            top.splice(i, 0, item);
+            if (top.length > k) top.pop();
+        };
+        for (const g of words) consider(g, true);
+        for (const g of s.extra) if (s.mark[g] !== stamp) consider(g, false);
+        return top;
     }
 
     /**
      * 推測語 g を出した場合の平均手数を、決定木を depth 段まで先読みして求める。
-     * hard: ハードモード, cons: 現在の制約, extra: 部分問題で試す追加の推測語, turn: これまでの手数
+     * pos: 候補の位置, hard: ハードモード, cons: 現在の制約, turn: これまでの手数
      */
-    _expectedWithLookahead(g, cands, depth, hard, cons, extra, turn) {
-        const n = cands.length;
+    _expectedWithLookahead(g, pos, depth, hard, cons, turn) {
+        const n = pos.length, s = this._search, rows = s.rows, off = this._row(g);
+        // パターンごとに候補を振り分ける（パターンは最初に現れた順、各バケツ内は元の順）
+        const sizes = this.bucketSizes, touched = [];
+        for (let i = 0; i < n; i++) {
+            const p = rows[off + pos[i]];
+            if (sizes[p]++ === 0) touched.push(p);
+        }
+        const starts = [];
+        let acc = 0;
+        for (const p of touched) {
+            starts.push(acc);
+            const k = sizes[p];
+            sizes[p] = acc;
+            acc += k;
+        }
+        const sorted = new Int32Array(n);
+        for (let i = 0; i < n; i++) sorted[sizes[rows[off + pos[i]]]++] = pos[i];
+        for (const p of touched) sizes[p] = 0;
+
         let total = 0;
-        for (const [p, bucket] of this.partition(g, cands)) {
+        for (let j = 0; j < touched.length; j++) {
+            const p = touched[j];
             if (p === ALL_GREEN) continue;
-            if (bucket.length === n) return Infinity; // 何も絞り込めない推測
+            const start = starts[j], end = j + 1 < touched.length ? starts[j + 1] : n;
+            if (end - start === n) return Infinity; // 何も絞り込めない推測
             const nextCons = hard ? this.addConstraint(cons, g, p) : cons;
-            total += bucket.length * this._solveCost(bucket, depth, hard, nextCons, extra, turn + 1);
+            total += (end - start) * this._solveCost(sorted.subarray(start, end), depth, hard, nextCons, turn + 1);
         }
         return this.guessCost(turn + 1) + total / n;
     }
 
-    /** 候補 cands を解き切るまでの平均手数（次の1手を含む）の最小値 */
-    _solveCost(cands, depth, hard, cons, extra, turn) {
-        const n = cands.length;
+    /** 候補（位置 pos）を解き切るまでの平均手数（次の1手を含む）の最小値 */
+    _solveCost(pos, depth, hard, cons, turn) {
+        const n = pos.length;
         if (n <= 2) return this.leafCost(n, turn);
-        const pool = [...new Set([...cands, ...extra])]
-            .filter(g => !hard || this.hardOk(g, cons));
-        const scored = this._scorePool(pool, cands, turn, true);
+        const memo = this._search.memo;
+        const key = `${depth} ${turn} ${cons.key} ${pos.join(',')}`;
+        const cached = memo.get(key);
+        if (cached !== undefined) return cached;
+
+        let best;
         if (depth <= 0) {
+            const [first] = this._scoreSub(pos, hard, cons, turn, 1);
             // 少数なら最後まで解いてみる（ハードモードの _OUND のような罠を見抜くため）
-            if (n <= this.params.rolloutMax) return this._expectedWithLookahead(scored[0].g, cands, 0, hard, cons, extra, turn);
-            return scored[0].expected;
+            best = n <= this.params.rolloutMax
+                ? this._expectedWithLookahead(first.g, pos, 0, hard, cons, turn)
+                : first.expected;
+        } else {
+            best = Infinity;
+            for (const s of this._scoreSub(pos, hard, cons, turn, this.params.innerK)) {
+                best = Math.min(best, this._expectedWithLookahead(s.g, pos, depth - 1, hard, cons, turn));
+            }
         }
-        let best = Infinity;
-        for (const s of scored.slice(0, this.params.innerK)) {
-            best = Math.min(best, this._expectedWithLookahead(s.g, cands, depth - 1, hard, cons, extra, turn));
-        }
+        memo.set(key, best);
         return best;
     }
 
     /**
      * 次に入力すべき単語のランキングを返す。
      * history: [{word, pattern}], hard: ハードモードか, limit: 返す件数, depth: 先読みの深さ（省略時は候補数で自動）,
-     * params: 探索パラメータの上書き, book: ハードモードの定跡（book.js の HARD_BOOK）
+     * params: 探索パラメータの上書き, book: 定跡（book.js の NORMAL_BOOK / HARD_BOOK。モードが違えば使わない）
      * 戻り値: { candidates: string[], ranking: [{word, expected, isCandidate}] }
      */
     rank(history, { hard = false, limit = 30, depth, params, book } = {}) {
         this.params = { ...DEFAULT_PARAMS, ...params };
         this.clusterWeight = hard ? this.params.clusterWeightHard : this.params.clusterWeightNormal;
+        this.cost = hard ? this.params.costHard : this.params.costNormal;
         const cands = this.candidates(history);
         if (cands.length === 0) return { candidates: [], ranking: [] };
 
@@ -305,48 +407,76 @@ export class Solver {
             if (g !== undefined) cons = this.addConstraint(cons, g, h.pattern);
         }
 
-        let pool = this.words.map((_, i) => i);
-        if (hard) pool = pool.filter(g => this.hardOk(g, cons));
-
-        const turn = history.length;
-        const scored = this._scorePool(pool, cands, turn);
-        if (cands.length > 2) {
-            // 上位候補は決定木を先読みして平均手数を精密化（候補が少ないほど深く読む）
-            const n = cands.length;
-            if (depth === undefined) depth = n <= this.params.depth2Max ? 2 : n <= this.params.depth1Max ? 1 : 0;
-            const extra = scored.slice(0, this.params.extraPool).map(s => s.g);
-            const top = scored.slice(0, this.params.topK);
-            this._startCache(cands);
-            try {
-                for (const s of top) {
-                    s.expected = this._expectedWithLookahead(s.g, cands, depth, hard, cons, extra, turn);
+        const n = cands.length, W = this.words.length;
+        let liveMask = 0;
+        for (const a of cands) for (let j = 0; j < 5; j++) liveMask |= 1 << this.codes[a * 5 + j];
+        this._search = {
+            cands,
+            liveMask,
+            rows: new Uint8Array(W * n),
+            posValue: this._buildPosValue(cands),
+            rowOff: new Int32Array(W).fill(-1),
+            rowByKey: new Map(),
+            pats: new Uint8Array(n),
+            mark: new Int32Array(W),
+            stamp: 0,
+            leafTables: [],
+            memo: new Map(),
+            extra: [],
+        };
+        try {
+            const isCand = new Uint8Array(W);
+            for (const a of cands) isCand[a] = 1;
+            const clusters = this.clusterWeight > 0 ? this.clusters(cands) : [];
+            const useClusters = clusters.length > 0 ? clusters : null;
+            const turn = history.length;
+            const scored = [];
+            const evaluated = new Map(); // 行の位置 → [見積もり, エントロピー]（行を共有する語は評価も同じ）
+            for (let g = 0; g < W; g++) {
+                if (hard && !this.hardOk(g, cons)) continue;
+                const off = this._row(g);
+                let e = evaluated.get(off);
+                if (!e) {
+                    e = [this._evaluate(this._search.rows.subarray(off, off + n), n, turn, useClusters), this._entropy];
+                    evaluated.set(off, e);
                 }
-            } finally {
-                this._cache = null;
+                scored.push({ g, isCandidate: isCand[g] === 1, expected: e[0], entropy: e[1] });
             }
-            top.sort((x, y) => x.expected - y.expected
-                || (y.isCandidate - x.isCandidate)
-                || (y.entropy - x.entropy));
-            scored.splice(0, top.length, ...top);
-        }
+            scored.sort(compareScored);
 
-        // 定跡（事前に最後まで解かせて選んだ2語目）があれば先頭にする
-        const entry = book && hard && history.length === 1 && history[0].word === book.opener
-            ? book.second[history[0].pattern] : null;
-        const bookIndex = entry ? scored.findIndex(s => this.words[s.g] === entry.word) : -1;
-        if (bookIndex >= 0) {
-            const [s] = scored.splice(bookIndex, 1);
-            scored.unshift({ ...s, expected: entry.expected, fromBook: true });
-        }
+            if (n > 2) {
+                // 上位候補は決定木を先読みして平均手数を精密化（候補が少ないほど深く読む）
+                if (depth === undefined) depth = n <= this.params.depth2Max ? 2 : n <= this.params.depth1Max ? 1 : 0;
+                this._search.extra = scored.slice(0, this.params.extraPool).map(s => s.g);
+                const top = scored.slice(0, this.params.topK);
+                const all = Int32Array.from(cands, (_, i) => i);
+                for (const s of top) {
+                    s.expected = this._expectedWithLookahead(s.g, all, depth, hard, cons, turn);
+                }
+                top.sort(compareScored);
+                scored.splice(0, top.length, ...top);
+            }
 
-        const toResult = s => ({
-            word: this.words[s.g],
-            expected: s.expected,
-            isCandidate: s.isCandidate,
-            fromBook: !!s.fromBook,
-        });
-        // 候補単語はランキング順に並べる
-        const candidates = scored.filter(s => s.isCandidate).map(s => this.words[s.g]);
-        return { candidates, ranking: scored.slice(0, limit).map(toResult) };
+            // 定跡（事前に最後まで解かせて選んだ2語目）があれば先頭にする
+            const entry = book && book.hard === hard && history.length === 1 && history[0].word === book.opener
+                ? book.second[history[0].pattern] : null;
+            const bookIndex = entry ? scored.findIndex(s => this.words[s.g] === entry.word) : -1;
+            if (bookIndex >= 0) {
+                const [s] = scored.splice(bookIndex, 1);
+                scored.unshift({ ...s, expected: entry.expected, fromBook: true });
+            }
+
+            const toResult = s => ({
+                word: this.words[s.g],
+                expected: s.expected,
+                isCandidate: s.isCandidate,
+                fromBook: !!s.fromBook,
+            });
+            // 候補単語はランキング順に並べる
+            const candidates = scored.filter(s => s.isCandidate).map(s => this.words[s.g]);
+            return { candidates, ranking: scored.slice(0, limit).map(toResult) };
+        } finally {
+            this._search = null;
+        }
     }
 }
