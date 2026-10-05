@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="Wordle攻略のヒントを出してくれるアプリです" />
     <title>Wordle Solver</title>
     <meta property="og:title" content="Wordle Solver" />
@@ -16,85 +16,156 @@
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="ja_JP" />
     <meta property="og:locale:alternate" content="en_US" />
+    <meta name="theme-color" content="#f4f4f4" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#121213" media="(prefers-color-scheme: dark)">
 
     <link rel="stylesheet" href="style.css">
     <link rel="manifest" href="manifest.json">
     <link rel="icon" href="/icons/128.ico" type="image/x-icon" sizes="128x128">
     <link rel="icon" href="/icons/64.ico" type="image/x-icon" sizes="64x64">
     <link rel="icon" href="/icons/32.ico" type="image/x-icon" sizes="32x32">
+    <!-- 色覚サポート配色は描画前に適用して、色のちらつきを防ぐ -->
+    <script>
+        try {
+            if (localStorage.getItem('highContrast') === 'true') document.documentElement.dataset.contrast = 'high';
+        } catch (e) { /* ストレージが使えなくても動作させる */ }
+    </script>
 </head>
 <body>
-    <div class="container">
-        <div id="input-section">
-            <div class="row">
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-            </div>
-            <div class="row">
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-            </div>
-            <div class="row">
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-            </div>
-            <div class="row">
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-            </div>
-            <div class="row">
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-                <div class="cell"></div>
-            </div>
-        </div>
-
-        <div id="solution-section">
-            <div id="solution-grid">
-                <div class="green-row">
-                    <div class="cell green"></div>
-                    <div class="cell green"></div>
-                    <div class="cell green"></div>
-                    <div class="cell green"></div>
-                    <div class="cell green"></div>
-                </div>
-                <div class="yellow-row">
-                    <div class="cell yellow"></div>
-                    <div class="cell yellow"></div>
-                    <div class="cell yellow"></div>
-                    <div class="cell yellow"></div>
-                    <div class="cell yellow"></div>
-                </div>
-            </div>
-            <button id="hard-mode-btn" class="hard-mode-btn">hard mode: OFF</button>
-            <div id="answer-section">
-                <button id="possible-words-count-btn" class="possible-words-count-btn">
-                    <span id="best-word"></span>
-                    <span id="word-count">see 0 possible words</span>
+    <div class="app">
+        <header class="app-header">
+            <div class="header-side">
+                <button id="help-btn" class="icon-btn" type="button" aria-label="使い方" title="使い方">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8v.6"/><circle cx="12" cy="17" r=".7" fill="currentColor"/></svg>
                 </button>
-                <div id="word-list-container" class="hidden">
-                </div>
             </div>
-        </div>
+            <h1>Wordle Solver <span id="hard-badge" class="badge" hidden>HARD</span></h1>
+            <div class="header-side end">
+                <button id="settings-btn" class="icon-btn" type="button" aria-label="設定" title="設定">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+                </button>
+                <button id="reset-btn" class="icon-btn" type="button" aria-label="リセット" title="リセット">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v5h5"/><path d="M5.1 14.5A7.5 7.5 0 1 0 6.6 7L4 10"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="layout">
+            <section class="board-area">
+                <div id="input-section">
+                    <div class="row"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+                    <div class="row"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+                    <div class="row"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+                    <div class="row"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+                    <div class="row"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+                </div>
+                <!-- 画面内キーボード（script.js で生成） -->
+                <div id="keyboard" aria-label="キーボード"></div>
+            </section>
+
+            <section class="info-area">
+                <div id="solution-section">
+                    <div id="solution-grid">
+                        <div class="summary-group">
+                            <div class="summary-caption">位置が確定した文字</div>
+                            <div class="green-row">
+                                <div class="tile green"></div><div class="tile green"></div><div class="tile green"></div><div class="tile green"></div><div class="tile green"></div>
+                            </div>
+                        </div>
+                        <div class="summary-group">
+                            <div class="summary-caption">含まれる文字</div>
+                            <div class="yellow-row">
+                                <div class="tile yellow"></div><div class="tile yellow"></div><div class="tile yellow"></div><div class="tile yellow"></div><div class="tile yellow"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="excluded-letters" class="excluded-letters"></div>
+                </div>
+
+                <button id="possible-words-count-btn" type="button">
+                    <span class="best">
+                        <span class="best-label">次のおすすめ</span>
+                        <span id="best-word"></span>
+                    </span>
+                    <span id="word-count"></span>
+                </button>
+
+                <div id="word-list-panel" class="sheet" aria-label="候補の一覧">
+                    <div class="sheet-header">
+                        <span class="sheet-title">候補の一覧</span>
+                        <button id="word-list-close" class="icon-btn" type="button" aria-label="閉じる">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                        </button>
+                    </div>
+                    <div id="word-list-container"></div>
+                </div>
+            </section>
+        </main>
     </div>
 
-    <!-- スマホのキーボード表示用の非表示input要素 -->
-    <!-- 参考：https://beanslabo.co.jp/techblog/7432/#subHeading02-03 -->
-    <input type="text" id="hidden-input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="email">
+    <div id="sheet-backdrop" class="sheet-backdrop"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <dialog id="help-dialog" class="dialog">
+        <div class="dialog-inner">
+            <div class="dialog-header">
+                <h2>使い方</h2>
+                <form method="dialog"><button class="icon-btn" aria-label="閉じる"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></form>
+            </div>
+            <div class="dialog-body">
+                <ol class="steps">
+                    <li><b>本家 Wordle で入力した単語</b>を、ここにも入力します。5文字打って「確定」を押してください。（最初の行には、おすすめの1語目が入っています）</li>
+                    <li>文字のマスを<b>タップ</b>すると、色が 灰 → 黄 → 緑 の順に変わります。本家の結果と同じ色にしてください。</li>
+                    <li>「次のおすすめ」に、次に入れるとよい単語が表示されます。タップすると候補の一覧が開き、単語を選ぶと入力欄に入ります。</li>
+                </ol>
+
+                <h3>色の意味</h3>
+                <div class="legend-row"><span class="tile green filled">A</span>正しい位置にある文字</div>
+                <div class="legend-row"><span class="tile yellow filled">B</span>答えに含まれるが、位置が違う文字</div>
+                <div class="legend-row"><span class="tile gray filled">C</span>答えに含まれない文字</div>
+
+                <h3>便利な操作</h3>
+                <ul>
+                    <li>行を<b>長押し</b>すると打ち直せます。何も入れずに「確定」を押すとその行を削除、Esc（または盤面の外をタップ）で取り消します。</li>
+                    <li>右上の <b>リセット</b> で盤面を最初に戻せます（直後なら元に戻せます）。</li>
+                    <li>右上の <b>設定</b> で、ハードモードと色覚サポート配色を切り替えられます。</li>
+                </ul>
+
+                <h3>一覧の見方</h3>
+                <ul>
+                    <li>数値は、その単語を入れたときに、<b>その1手を含めて平均であと何手で解けるか</b>の目安です（小さいほど良い）。数値をタップすると、その単語についての説明が出ます。</li>
+                    <li><span class="chip star">正解候補</span> この単語がそのまま答えの可能性があります。当たればその手で解けます。付いていない単語は答えにはなりませんが、候補を絞り込むのに役立つ単語です。</li>
+                    <li><span class="chip book">定跡</span> 事前に計算しておいた手順に沿った単語</li>
+                </ul>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="settings-dialog" class="dialog">
+        <div class="dialog-inner">
+            <div class="dialog-header">
+                <h2>設定</h2>
+                <form method="dialog"><button class="icon-btn" aria-label="閉じる"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></form>
+            </div>
+            <div class="dialog-body">
+                <div class="setting">
+                    <div>
+                        <div class="setting-name">ハードモード</div>
+                        <div class="setting-desc">判明したヒントを必ず使う単語だけをおすすめします</div>
+                    </div>
+                    <button id="hard-mode-btn" class="switch" type="button" role="switch" aria-checked="false" aria-label="ハードモード"></button>
+                </div>
+                <div class="setting">
+                    <div>
+                        <div class="setting-name">色覚サポート</div>
+                        <div class="setting-desc">緑と黄の代わりに、見分けやすいオレンジと青を使います</div>
+                    </div>
+                    <button id="contrast-btn" class="switch" type="button" role="switch" aria-checked="false" aria-label="色覚サポート"></button>
+                </div>
+            </div>
+        </div>
+    </dialog>
+
     <!-- type="module" を追加して、ESモジュールとしてスクリプトを読み込む -->
     <script src="script.js" type="module"></script>
 </body>
