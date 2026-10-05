@@ -1,35 +1,105 @@
 import { ANSWERS, ALLOWED } from './words.js';
 import { OPENING_RANKING, OPENING_RANKING_HARD } from './opening.js';
 import { colorsToPattern } from './solver.js';
-import { HARD_BOOK } from './book.js';
+import { NORMAL_BOOK, HARD_BOOK } from './book.js';
 
 const wordCountSpan = document.getElementById('word-count');
 const bestWordSpan = document.getElementById('best-word');
 const hardModeButton = document.getElementById('hard-mode-btn');
+const contrastButton = document.getElementById('contrast-btn');
+const hardBadge = document.getElementById('hard-badge');
+const wordListPanel = document.getElementById('word-list-panel');
 const wordListContainer = document.getElementById('word-list-container');
+const wordListCloseButton = document.getElementById('word-list-close');
+const sheetBackdrop = document.getElementById('sheet-backdrop');
 const possibleWordsCountButton = document.getElementById('possible-words-count-btn');
-const hiddenInput = document.getElementById('hidden-input');
+const excludedLettersDiv = document.getElementById('excluded-letters');
+const keyboard = document.getElementById('keyboard');
+const toast = document.getElementById('toast');
+const helpDialog = document.getElementById('help-dialog');
+const settingsDialog = document.getElementById('settings-dialog');
+const rows = Array.from(document.querySelectorAll('#input-section .row'));
 
+const COLORS = ['gray', 'yellow', 'green'];
 
 let activeInputRow = null;
 let currentInputPosition = 0;
-let originalWordBeforeEdit = ''; // 再編集前の単語を保存する変数
+let originalRowBeforeEdit = null; // 再編集前の行（文字と色）を保存する変数。新規入力のときは null
 
 // 入力可能な単語（正解候補 + 入力可能単語）
 const validWords = new Set([...ANSWERS, ...ALLOWED]);
 
-// ハードモード（設定はブラウザに保存）
-let hardMode = false;
-try {
-    hardMode = localStorage.getItem('hardMode') === 'true';
-} catch (e) { /* ストレージが使えなくても動作させる */ }
+// ブラウザに保存した設定を読み書きする（ストレージが使えなくても動作させる）
+function loadSetting(key) {
+    try {
+        return localStorage.getItem(key) === 'true';
+    } catch (e) {
+        return false;
+    }
+}
 
-// モードごとの最初に入れておく単語（全正解でのシミュレーション結果から選定）
-// 通常: tarse, ハード: 定跡（book.js）の1語目
-const STARTING_WORDS = { normal: ['tarse'], hard: [HARD_BOOK.opener] };
+function saveSetting(key, value) {
+    try {
+        localStorage.setItem(key, String(value));
+    } catch (e) { /* 保存できなくても続行 */ }
+}
+
+// ハードモード（設定はブラウザに保存）
+let hardMode = loadSetting('hardMode');
+
+// モードごとの最初に入れておく単語（全正解でのシミュレーション結果から選定した、定跡（book.js）の1語目）
+const STARTING_WORDS = { normal: [NORMAL_BOOK.opener], hard: [HARD_BOOK.opener] };
 
 // 表示する「おすすめ」の件数
 const RANKING_DISPLAY_COUNT = 20;
+
+// マスの色を取得・設定する
+function cellColor(cell) {
+    return COLORS.find(color => cell.classList.contains(color)) || null;
+}
+
+function setCellColor(cell, color) {
+    cell.classList.remove(...COLORS);
+    if (color) cell.classList.add(color);
+}
+
+// アニメーションを最初から再生する
+function playAnimation(element, className) {
+    element.classList.remove(className);
+    void element.offsetWidth; // 付け直したクラスでアニメーションをやり直させる
+    element.classList.add(className);
+    element.addEventListener('animationend', () => element.classList.remove(className), { once: true });
+}
+
+// 一言メッセージを表示する（action を渡すと「元に戻す」などのボタンを付ける）
+let toastTimer = null;
+function showToast(message, action = null) {
+    toast.replaceChildren(message);
+    if (action) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = action.label;
+        button.addEventListener('click', () => {
+            action.run();
+            hideToast();
+        });
+        toast.appendChild(button);
+    }
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, action ? 5000 : 1800);
+}
+
+function hideToast() {
+    toast.classList.remove('show');
+}
+
+// 盤面が変わったら、候補・まとめ・キーボードの色を更新する
+function boardChanged() {
+    displayPossibleWords();
+    updateSolutionSection();
+    updateKeyboard();
+}
 
 // マスの色を変更する関数
 function changeCellColor(cell) {
@@ -43,91 +113,96 @@ function changeCellColor(cell) {
         return;
     }
 
-    const colors = ['gray', 'yellow', 'green'];
-    let currentColor = null;
+    const currentColor = cellColor(cell);
 
-    // 現在の色を取得
-    for (const color of colors) {
-        if (cell.classList.contains(color)) {
-            currentColor = color;
-            break;
+    // 次の色に切り替える
+    const nextColor = COLORS[(COLORS.indexOf(currentColor) + 1) % COLORS.length];
+
+    const cellIndex = Array.from(cell.parentNode.children).indexOf(cell);
+    const newLetter = cell.textContent.trim().toLowerCase();
+
+    // もし次の色が黄色なら、ユニークな黄色文字が5つを超えないかチェック
+    if (nextColor === 'yellow') {
+        const uniqueYellowLetters = new Set();
+        document.querySelectorAll('#input-section .cell.yellow').forEach(yellowCell => {
+            uniqueYellowLetters.add(yellowCell.textContent.trim().toLowerCase());
+        });
+        // 新しい文字が既存の黄色文字セットになく、かつセットのサイズが既に5以上の場合
+        if (!uniqueYellowLetters.has(newLetter) && uniqueYellowLetters.size >= 5) {
+            showToast('黄色の文字は5種類までです');
+            return; // 6種類目の黄色は許可しない
         }
     }
 
-    // 次の色に切り替える
-    let nextColorIndex = (colors.indexOf(currentColor) + 1) % colors.length;
-    let nextColor = colors[nextColorIndex];
-
-    const cellIndex = Array.from(cell.parentNode.children).indexOf(cell);
-    const allRows = document.querySelectorAll('#input-section .row');
-
-    // もし次の色が緑なら、同じ列に異なる文字の緑セルがあればリセット
+    // もし次の色が緑なら、同じ列に異なる文字の緑セルがあれば灰色に戻す
     if (nextColor === 'green') {
-        const newLetter = cell.textContent.trim().toLowerCase();
-        allRows.forEach(row => {
+        rows.forEach(row => {
             const cellInSameColumn = row.children[cellIndex];
             const existingLetter = cellInSameColumn.textContent.trim().toLowerCase();
             if (cellInSameColumn.classList.contains('green') && existingLetter !== newLetter) {
-                cellInSameColumn.classList.remove('green');
+                setCellColor(cellInSameColumn, 'gray');
             }
         });
     }
 
-    // もし次の色が黄色なら、ユニークな黄色文字が5つを超えないかチェック
-    if (nextColor === 'yellow') {
-        const newLetter = cell.textContent.trim().toLowerCase();
-        if (newLetter) {
-            const uniqueYellowLetters = new Set();
-            document.querySelectorAll('#input-section .cell.yellow').forEach(yellowCell => {
-                uniqueYellowLetters.add(yellowCell.textContent.trim().toLowerCase());
-            });
-            // 新しい文字が既存の黄色文字セットになく、かつセットのサイズが既に5以上の場合
-            if (!uniqueYellowLetters.has(newLetter) && uniqueYellowLetters.size >= 5) {
-                return; // 6種類目の黄色は許可しない
-            }
-        }
-    }
-
-    // クラスを付け替える
-    if (currentColor) {
-        cell.classList.remove(currentColor);
-    }
-    cell.classList.add(nextColor);
-    displayPossibleWords();
-    updateSolutionSection();
+    setCellColor(cell, nextColor);
+    boardChanged();
 }
 
 // 各マスにクリックイベントを追加
-document.querySelectorAll('#input-section .cell').forEach(cell => {
-    cell.addEventListener('click', (event) => {
-        const row = cell.parentElement;
-        // 編集中の行はキャンセルしない
-        if (row.classList.contains('editing')) {
-            startEditing(row); 
-        // 既に文字が入っているセルをクリックした場合
-        } else if (cell.textContent.trim().length > 0) {
-            changeCellColor(cell);
-            cancelEditing(row);
-        // 空のセルをクリックした場合
-        } else {
-            startEditing(row);
-        }
+rows.forEach(row => {
+    row.querySelectorAll('.cell').forEach(cell => {
+        cell.addEventListener('click', () => {
+            // 編集中の行は何もしない（長押しで編集を始めた直後のクリックもここに来る）
+            if (row.classList.contains('editing')) return;
+            if (row.classList.contains('fixed')) {
+                // 確定済みの行は色を切り替える
+                cancelEditing();
+                changeCellColor(cell);
+            } else {
+                // 空の行は入力を始める
+                startEditing(row);
+            }
+        });
     });
 });
 
+// 行の文字と色を保存・復元する
+function snapshotRow(row) {
+    return Array.from(row.children).map(cell => ({ letter: cell.textContent, color: cellColor(cell) }));
+}
+
+function restoreRow(row, snapshot) {
+    row.classList.remove('editing');
+    row.classList.toggle('fixed', !!snapshot);
+    Array.from(row.children).forEach((cell, i) => {
+        cell.textContent = snapshot ? snapshot[i].letter : '';
+        setCellColor(cell, snapshot ? snapshot[i].color : null);
+    });
+}
+
+// 入力位置のマスに印を付ける
+function updateCursor() {
+    document.querySelectorAll('#input-section .cell.cursor').forEach(cell => cell.classList.remove('cursor'));
+    if (activeInputRow && currentInputPosition < 5) {
+        activeInputRow.children[currentInputPosition].classList.add('cursor');
+    }
+}
+
 // 行の編集を開始する関数
 function startEditing(row) {
-    displayPossibleWords();
-    // 再編集の場合、元の単語を保存し、fixedクラスを削除
-    if (originalWordBeforeEdit.length === 0) {
-        originalWordBeforeEdit = Array.from(row.children).map(cell => cell.textContent).join('');
-    }
+    if (activeInputRow === row) return;
+    // 別の行を編集中なら、そちらは取り消す
+    cancelEditing();
+
+    const wasFixed = row.classList.contains('fixed');
+    // 再編集の場合は元の行を保存しておく（取り消したときに戻す）
+    originalRowBeforeEdit = wasFixed ? snapshotRow(row) : null;
 
     // 行の文字をクリアして、先頭から入力できるようにする
     row.querySelectorAll('.cell').forEach(cell => {
-        cell.textContent = null;
-        // 背景色をリセットするために、色クラスを削除
-        cell.classList.remove('gray', 'yellow', 'green');
+        cell.textContent = '';
+        setCellColor(cell, null);
     });
 
     activeInputRow = row;
@@ -135,113 +210,220 @@ function startEditing(row) {
 
     row.classList.remove('fixed');
     row.classList.add('editing');
-    // スマホのキーボードをアクティベートするために非表示inputにフォーカス
-    hiddenInput.focus();
+    updateCursor();
+    // 打ち直す行の情報を除いて候補を計算し直す
+    if (wasFixed) boardChanged();
 }
 
 // 行の編集をキャンセルする関数
 function cancelEditing() {
-    hiddenInput.blur(); // フォーカスを外してキーボードを閉じる
     if (!activeInputRow) return;
 
-    if (originalWordBeforeEdit) {
-        // 再編集をキャンセルした場合は元の単語に戻す
-        activeInputRow.querySelectorAll('.cell').forEach((cell, index) => {
-            cell.textContent = originalWordBeforeEdit[index] || '';
-        });
-        activeInputRow.classList.add('fixed'); // 再び固定する
-    } else {
-        // 新規入力をキャンセルした場合は文字をクリア
-        activeInputRow.querySelectorAll('.cell').forEach(cell => {
-            cell.textContent = '';
-        });
-    }
-    activeInputRow.classList.remove('editing');
+    // 再編集をキャンセルした場合は元の単語に戻し、新規入力をキャンセルした場合は文字をクリアする
+    const restored = !!originalRowBeforeEdit;
+    restoreRow(activeInputRow, originalRowBeforeEdit);
     activeInputRow = null;
     currentInputPosition = 0;
-    originalWordBeforeEdit = '';
+    originalRowBeforeEdit = null;
+    updateCursor();
+    if (restored) boardChanged();
+}
+
+// 入力欄が空いている最初の行
+function firstEmptyRow() {
+    return rows.find(row => !row.classList.contains('fixed')) || null;
+}
+
+// 1文字入力する
+function typeLetter(letter) {
+    if (!activeInputRow) {
+        const row = firstEmptyRow();
+        if (!row) {
+            showToast('空いている行がありません（行を長押しで打ち直し）');
+            return;
+        }
+        startEditing(row);
+    }
+    if (currentInputPosition >= 5) return;
+    const cell = activeInputRow.children[currentInputPosition];
+    cell.textContent = letter;
+    currentInputPosition++;
+    playAnimation(cell, 'pop');
+    updateCursor();
+}
+
+// 1文字消す
+function deleteLetter() {
+    if (!activeInputRow || currentInputPosition === 0) return;
+    currentInputPosition--;
+    activeInputRow.children[currentInputPosition].textContent = '';
+    updateCursor();
+}
+
+// 入力中の行を確定する
+function submitRow() {
+    if (!activeInputRow) return;
+
+    if (currentInputPosition === 0) {
+        // 打ち直し中の行を空のまま確定したら、その行を削除する
+        if (originalRowBeforeEdit) {
+            originalRowBeforeEdit = null;
+            cancelEditing();
+            showToast('行を削除しました');
+        }
+        return;
+    }
+
+    if (currentInputPosition < 5) {
+        playAnimation(activeInputRow, 'shake');
+        showToast('5文字入力してください');
+        return;
+    }
+
+    validateAndFixWord(activeInputRow);
 }
 
 // 入力された単語を検証し、行を固定する関数
 function validateAndFixWord(row) {
-    const cells = row.querySelectorAll('.cell');
-    let word = '';
-    cells.forEach(cell => {
-        word += cell.textContent.trim();
-    });
+    const cells = Array.from(row.querySelectorAll('.cell'));
+    const word = cells.map(cell => cell.textContent.trim()).join('').toLowerCase();
 
-    if (word.length === 5) {
-        if (validWords.has(word.toLowerCase())) {
-            // 有効な単語の場合
-            row.classList.add('fixed'); // 行を固定
-            row.classList.remove('editing');
-            cells.forEach(cell => cell.classList.add('gray')); // 文字をグレーに
-            activeInputRow = null;
-            currentInputPosition = 0;
-            displayPossibleWords();
-            updateSolutionSection();
-        } else {
-            // 無効な単語の場合
-            const container = document.querySelector('.container');
-            container.classList.add('shake');
-            setTimeout(() => container.classList.remove('shake'), 500);
-        }
+    if (!validWords.has(word)) {
+        // 無効な単語の場合
+        playAnimation(row, 'shake');
+        showToast('単語リストにない単語です');
+        return;
     }
+
+    // 同じ単語に打ち直した場合は元の色を残し、それ以外はグレーにする
+    const original = originalRowBeforeEdit;
+    const keepColors = original && original.map(c => c.letter).join('').toLowerCase() === word;
+
+    row.classList.add('fixed'); // 行を固定
+    row.classList.remove('editing');
+    // 色はすぐに付け、1マスずつめくる演出は CSS で行う（めくり終わるまで色を隠す）
+    cells.forEach((cell, i) => {
+        setCellColor(cell, keepColors ? original[i].color : 'gray');
+        cell.style.setProperty('--i', i);
+        playAnimation(cell, 'flip');
+    });
+    activeInputRow = null;
+    currentInputPosition = 0;
+    originalRowBeforeEdit = null;
+    updateCursor();
+    boardChanged();
 }
 
-// キー入力を処理する関数
-function handleKeyInput(event) {
-    // 物理キーボード用の処理
-    if (!activeInputRow) return;
-
-    const { key } = event;
-    const cells = activeInputRow.querySelectorAll('.cell');
-
-    if (key === 'Backspace' && currentInputPosition > 0) {
-        currentInputPosition--;
-        cells[currentInputPosition].textContent = '';
-    } else if (key === 'Enter' && currentInputPosition === 5) {
-        validateAndFixWord(activeInputRow);
+// キー入力を処理する関数（物理キーボード・画面内キーボード共通）
+function handleKey(key) {
+    if (key === 'Enter') {
+        submitRow();
+    } else if (key === 'Backspace') {
+        deleteLetter();
     } else if (key === 'Escape') {
         cancelEditing();
+    } else if (/^[a-z]$/.test(key)) {
+        typeLetter(key);
     }
 }
 
-// スマホのソフトウェアキーボードからの入力を処理する関数
-function handleSoftwareKeyInput(event) {
-    if (!activeInputRow) return;
-
-    const cells = activeInputRow.querySelectorAll('.cell');
-    const inputType = event.inputType;
-    const data = event.data;
-
-    // 物理キーボードとソフトウェアキーボード両方の文字入力を処理
-    if (inputType === 'insertText' && data) {
-        // 1文字ずつ処理
-        for (const char of data.toLowerCase()) {
-            if (char.match(/^[a-z]$/) && currentInputPosition < 5) {
-                cells[currentInputPosition].textContent = char;
-                currentInputPosition++;
-                if (currentInputPosition === 5) {
-                    validateAndFixWord(activeInputRow);
-                }
-            }
-        }
+function handlePhysicalKey(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    // ダイアログ表示中はダイアログに任せる
+    if (document.querySelector('dialog[open]')) return;
+    if (event.key === 'Escape' && wordListPanel.classList.contains('open')) {
+        closeWordList();
+        return;
     }
+    // 画面内キーボード以外のボタンにフォーカスがあるときの Enter は、そのボタンに任せる
+    const target = event.target instanceof Element ? event.target : null;
+    if (event.key === 'Enter' && target?.closest('button') && !target.closest('#keyboard')) return;
 
-    hiddenInput.value = ''; // inputを常に空にしておく
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    if (['Enter', 'Backspace', 'Escape'].includes(key) || /^[a-z]$/.test(key)) {
+        event.preventDefault();
+        handleKey(key);
+    }
+}
+
+// 画面内キーボードを作る
+const KEYBOARD_ROWS = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+
+function createKey(key, label, ariaLabel) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'key';
+    button.dataset.key = key;
+    button.textContent = label;
+    if (ariaLabel) button.setAttribute('aria-label', ariaLabel);
+    return button;
+}
+
+function buildKeyboard() {
+    KEYBOARD_ROWS.forEach((letters, i) => {
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'kb-row';
+        const spacer = () => Object.assign(document.createElement('div'), { className: 'kb-spacer' });
+
+        if (i === 1) rowDiv.appendChild(spacer());
+        if (i === 2) {
+            const enterKey = createKey('Enter', '確定');
+            enterKey.classList.add('wide');
+            rowDiv.appendChild(enterKey);
+        }
+        for (const letter of letters) {
+            rowDiv.appendChild(createKey(letter, letter));
+        }
+        if (i === 2) {
+            const backspaceKey = createKey('Backspace', '⌫', '1文字消す');
+            backspaceKey.classList.add('wide');
+            rowDiv.appendChild(backspaceKey);
+        }
+        if (i === 1) rowDiv.appendChild(spacer());
+
+        keyboard.appendChild(rowDiv);
+    });
+
+    // キーにフォーカスを移さない（物理キーボードの Enter が二重に効かないように）
+    keyboard.addEventListener('mousedown', event => event.preventDefault());
+    keyboard.addEventListener('click', event => {
+        const key = event.target.closest('.key');
+        if (key) handleKey(key.dataset.key);
+    });
+}
+
+// 確定済みの行から、文字ごとに分かっている一番良い色を集める（緑 > 黄 > 灰）
+function letterStates() {
+    const states = {};
+    rows.filter(row => row.classList.contains('fixed')).forEach(row => {
+        Array.from(row.children).forEach(cell => {
+            const letter = cell.textContent.trim().toLowerCase();
+            if (!letter) return;
+            const color = cellColor(cell) || 'gray';
+            if (!states[letter] || COLORS.indexOf(color) > COLORS.indexOf(states[letter])) {
+                states[letter] = color;
+            }
+        });
+    });
+    return states;
+}
+
+// キーボードの色を更新する
+function updateKeyboard() {
+    const states = letterStates();
+    keyboard.querySelectorAll('.key').forEach(key => {
+        setCellColor(key, states[key.dataset.key] || null);
+    });
 }
 
 // 確定済みの行から、入力した単語とその色（フィードバック）の履歴を作る
 function collectHistory() {
     const history = [];
-    document.querySelectorAll('#input-section .row.fixed').forEach(row => {
+    rows.filter(row => row.classList.contains('fixed')).forEach(row => {
         const cells = Array.from(row.querySelectorAll('.cell'));
         const word = cells.map(cell => cell.textContent.trim().toLowerCase()).join('');
         if (word.length !== 5) return;
-        const colors = cells.map(cell =>
-            cell.classList.contains('green') ? 'green' :
-            cell.classList.contains('yellow') ? 'yellow' : 'gray');
+        const colors = cells.map(cell => cellColor(cell) || 'gray');
         history.push({ word, pattern: colorsToPattern(colors) });
     });
     return history;
@@ -276,14 +458,15 @@ async function runRanking(request) {
         const { Solver } = await import('./solver.js');
         mainThreadSolver = new Solver();
     }
-    const result = mainThreadSolver.rank(request.history, { hard: request.hard, limit: 30, book: HARD_BOOK });
+    const result = mainThreadSolver.rank(request.history, { hard: request.hard, limit: 30, book: request.hard ? HARD_BOOK : NORMAL_BOOK });
     renderRanking({ id: request.id, ...result });
 }
 
-// ハードモードの1手目は定跡の1語目を先頭にする
-function hardOpeningRanking() {
-    const opener = { word: HARD_BOOK.opener, expected: HARD_BOOK.expected, isCandidate: ANSWERS.includes(HARD_BOOK.opener), fromBook: true };
-    return [opener, ...OPENING_RANKING_HARD.filter(r => r.word !== opener.word)];
+// 1手目は定跡の1語目を先頭にする
+function openingRanking() {
+    const book = hardMode ? HARD_BOOK : NORMAL_BOOK;
+    const opener = { word: book.opener, expected: book.expected, isCandidate: ANSWERS.includes(book.opener), fromBook: true };
+    return [opener, ...(hardMode ? OPENING_RANKING_HARD : OPENING_RANKING).filter(r => r.word !== opener.word)];
 }
 
 // 候補単語とおすすめランキングを画面に表示する関数
@@ -293,34 +476,86 @@ function displayPossibleWords() {
     if (history.length === 0) {
         // 1手目は事前計算済みのランキングを使う
         latestRequest = null;
-        renderRanking({ id, candidates: ANSWERS, ranking: hardMode ? hardOpeningRanking() : OPENING_RANKING });
+        renderRanking({ id, candidates: ANSWERS, ranking: openingRanking() });
         return;
     }
-    bestWordSpan.textContent = 'thinking...';
+    possibleWordsCountButton.classList.add('loading');
+    bestWordSpan.textContent = '計算中';
     latestRequest = { id, history, hard: hardMode };
     runRanking(latestRequest);
 }
 
-function createWordItem(label, note, word) {
-    const wordItem = document.createElement('div');
-    wordItem.classList.add('word-item');
-    wordItem.dataset.word = word;
-    const labelSpan = document.createElement('span');
-    labelSpan.textContent = label;
-    wordItem.appendChild(labelSpan);
-    if (note) {
-        const noteSpan = document.createElement('span');
-        noteSpan.classList.add('word-note');
-        noteSpan.textContent = note;
-        wordItem.appendChild(noteSpan);
-    }
-    return wordItem;
+function createSpan(className, text) {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    return span;
 }
 
-function createListHeader(text) {
+// おすすめ単語の行（順位・単語・正解候補/定跡 と、タップで説明が開く平均手数）
+function createWordItem(rank, r) {
+    const wordRow = document.createElement('div');
+    wordRow.className = 'word-row';
+
+    const wordItem = document.createElement('button');
+    wordItem.type = 'button';
+    wordItem.className = 'word-item';
+    wordItem.dataset.word = r.word;
+    wordItem.appendChild(createSpan('word-rank', `${rank}.`));
+    wordItem.appendChild(createSpan('word-text', r.word));
+    if (r.isCandidate) {
+        const chip = createSpan('chip star', '正解候補');
+        chip.title = 'この単語がそのまま答えの可能性があります（当たればこの手で解けます）';
+        wordItem.appendChild(chip);
+    }
+    if (r.fromBook) wordItem.appendChild(createSpan('chip book', '定跡'));
+
+    const score = document.createElement('button');
+    score.type = 'button';
+    score.className = 'word-score';
+    score.textContent = `${r.expected.toFixed(2)} 手`;
+    score.setAttribute('aria-expanded', 'false');
+    score.setAttribute('aria-label', `${r.expected.toFixed(2)} 手（数値の説明を表示）`);
+    score.addEventListener('click', () => toggleScoreExplanation(wordRow, score, r));
+
+    wordRow.append(wordItem, score);
+    return wordRow;
+}
+
+// 数値の説明を単語の下に開く（同時に開くのは1つだけ）
+function toggleScoreExplanation(wordRow, score, r) {
+    const wasOpen = score.getAttribute('aria-expanded') === 'true';
+    wordListContainer.querySelectorAll('.score-explain').forEach(el => el.remove());
+    wordListContainer.querySelectorAll('.word-score[aria-expanded="true"]').forEach(el => el.setAttribute('aria-expanded', 'false'));
+    if (wasOpen) return;
+
+    const word = r.word.toUpperCase();
+    const expected = r.expected.toFixed(2);
+    const used = collectHistory().length; // ここまでに使った手数
+    const lines = [
+        `次に ${word} を入れると、この1手を含めて<b>平均およそ ${expected} 手</b>で解ける見込みです。`,
+    ];
+    if (used > 0) {
+        lines.push(`ここまでの ${used} 手と合わせると、合計でおよそ ${(used + r.expected).toFixed(1)} 手です。`);
+    }
+    lines.push(r.isCandidate
+        ? `${word} は答えの可能性もあるので、当たればこの手で解けます。`
+        : `${word} は答えにはなりませんが、候補を絞り込むのに役立つ単語です。`);
+    if (r.fromBook) lines.push('「定跡」は、事前に全パターンを計算して選んだ手順の一手です。');
+    lines.push('<span class="note">※ 5手以上かかる展開は少し減点して計算しているため、純粋な平均より少し大きめに出ます。小さいほど良い手です。</span>');
+
+    const explain = document.createElement('div');
+    explain.className = 'score-explain';
+    explain.innerHTML = lines.map(line => `<p>${line}</p>`).join('');
+    wordRow.after(explain);
+    score.setAttribute('aria-expanded', 'true');
+}
+
+function createListHeader(text, legend = '') {
     const header = document.createElement('div');
-    header.classList.add('word-list-header');
+    header.className = 'word-list-header';
     header.textContent = text;
+    if (legend) header.appendChild(createSpan('word-list-legend', legend));
     return header;
 }
 
@@ -328,52 +563,77 @@ function renderRanking({ id, candidates, ranking }) {
     // 古いリクエストの結果は捨てる
     if (id !== latestRequestId) return;
 
-    wordCountSpan.textContent = `see ${candidates.length} possible words`;
-    wordListContainer.innerHTML = '';
+    possibleWordsCountButton.classList.remove('loading');
+    wordListContainer.replaceChildren();
 
     if (candidates.length === 0) {
-        bestWordSpan.textContent = 'no match';
-        wordListContainer.appendChild(createListHeader('no possible words - check the colors'));
+        bestWordSpan.textContent = '該当なし';
+        wordCountSpan.textContent = '色の付け方を確認';
+        const empty = document.createElement('div');
+        empty.className = 'word-list-empty';
+        empty.textContent = '条件に合う単語がありません。マスの色が本家の結果と同じか確認してください。';
+        wordListContainer.appendChild(empty);
         return;
     }
-    bestWordSpan.textContent = `next: ${ranking[0].word}`;
+    bestWordSpan.textContent = ranking[0].word;
+    wordCountSpan.textContent = `候補 ${candidates.length} 語`;
 
-    // おすすめ順（数値は「この単語を含めて平均あと何手で解けるか」に、5手以上かかる展開への減点を加えたスコア。★は正解の可能性あり）
-    wordListContainer.appendChild(createListHeader('best next guesses (score ≈ avg. guesses to solve)'));
+    // おすすめ順（数値は「この単語を含めて平均あと何手で解けるか」に、5手以上かかる展開への減点を加えたスコア）
+    wordListContainer.appendChild(createListHeader('おすすめの次の一手', '数値：この単語を含めて平均あと何手で解けるかの目安（小さいほど良い、タップで説明）　正解候補：この単語がそのまま答えの可能性あり'));
     ranking.slice(0, RANKING_DISPLAY_COUNT).forEach((r, i) => {
-        const note = `${r.fromBook ? 'book ' : ''}${r.expected.toFixed(2)}${r.isCandidate ? ' ★' : ''}`;
-        wordListContainer.appendChild(createWordItem(`${i + 1}. ${r.word}`, note, r.word));
+        wordListContainer.appendChild(createWordItem(i + 1, r));
     });
 
-    wordListContainer.appendChild(createListHeader(`possible answers (${candidates.length})`));
+    wordListContainer.appendChild(createListHeader(`正解の候補（${candidates.length} 語）`));
+    const candidateList = document.createElement('div');
+    candidateList.className = 'candidates';
     candidates.forEach(word => {
-        wordListContainer.appendChild(createWordItem(word, '', word));
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'candidate';
+        item.dataset.word = word;
+        item.textContent = word;
+        candidateList.appendChild(item);
     });
+    wordListContainer.appendChild(candidateList);
 }
 
-// ハードモードの表示を更新
+// 設定の表示を更新
 function updateHardModeButton() {
-    hardModeButton.textContent = `hard mode: ${hardMode ? 'ON' : 'OFF'}`;
-    hardModeButton.classList.toggle('on', hardMode);
+    hardModeButton.setAttribute('aria-checked', String(hardMode));
+    hardBadge.hidden = !hardMode;
+}
+
+function updateContrastButton() {
+    contrastButton.setAttribute('aria-checked', String(document.documentElement.dataset.contrast === 'high'));
 }
 
 hardModeButton.addEventListener('click', () => {
     hardMode = !hardMode;
-    try {
-        localStorage.setItem('hardMode', String(hardMode));
-    } catch (e) { /* 保存できなくても続行 */ }
+    saveSetting('hardMode', hardMode);
     updateHardModeButton();
     // まだ色を付けていなければ、初期単語を新しいモードのものに差し替える
     const previousWords = STARTING_WORDS[hardMode ? 'normal' : 'hard'];
     if (!activeInputRow && isUntouchedStartingBoard(previousWords)) {
         fillStartingWords();
     }
-    displayPossibleWords();
+    boardChanged();
+});
+
+contrastButton.addEventListener('click', () => {
+    const highContrast = document.documentElement.dataset.contrast !== 'high';
+    if (highContrast) {
+        document.documentElement.dataset.contrast = 'high';
+    } else {
+        delete document.documentElement.dataset.contrast;
+    }
+    saveSetting('highContrast', highContrast);
+    updateContrastButton();
 });
 
 // 盤面が初期単語（すべて灰色）のままかどうか
 function isUntouchedStartingBoard(words) {
-    return Array.from(document.querySelectorAll('#input-section .row')).every((row, i) => {
+    return rows.every((row, i) => {
         const cells = Array.from(row.querySelectorAll('.cell'));
         const text = cells.map(cell => cell.textContent.trim().toLowerCase()).join('');
         const colored = cells.some(cell => cell.classList.contains('yellow') || cell.classList.contains('green'));
@@ -384,74 +644,79 @@ function isUntouchedStartingBoard(words) {
 // 盤面を空にして、現在のモードの初期単語を入れる
 function fillStartingWords() {
     const words = STARTING_WORDS[hardMode ? 'hard' : 'normal'];
-    document.querySelectorAll('#input-section .row').forEach((row, i) => {
-        const word = words[i] || '';
-        row.classList.remove('fixed', 'editing');
-        row.querySelectorAll('.cell').forEach((cell, j) => {
-            cell.textContent = word[j] || '';
-            cell.classList.remove('gray', 'yellow', 'green');
-            if (word) cell.classList.add('gray');
-        });
+    rows.forEach((row, i) => {
+        const word = words[i];
         // 初期単語が入っている行は固定状態にする
-        if (word) row.classList.add('fixed');
+        restoreRow(row, word ? Array.from(word, letter => ({ letter, color: 'gray' })) : null);
     });
-    updateSolutionSection();
 }
 
+// 盤面をリセットする（直後なら元に戻せる）
+function resetBoard() {
+    cancelEditing();
+    const snapshot = rows.map(row => row.classList.contains('fixed') ? snapshotRow(row) : null);
+    fillStartingWords();
+    boardChanged();
+    showToast('リセットしました', {
+        label: '元に戻す',
+        run: () => {
+            cancelEditing();
+            rows.forEach((row, i) => restoreRow(row, snapshot[i]));
+            boardChanged();
+        },
+    });
+}
+
+// 一覧で選んだ単語を入力欄に入れる（確定は「確定」キーで行う）
 function addSelectedWordToInput(word) {
-    // 編集中の行がなければ、背景が白くなっている行を編集モードにする
-    const rows = document.querySelectorAll('#input-section .row');
-    for (const row of rows) {
-        const cells = row.querySelectorAll('.cell');
-        let isEmpty = true;
-        for (const cell of cells) {
-            if (cell.classList.contains('gray')) {
-                isEmpty = false;
-            }
-            if (cell.classList.contains('yellow')) {
-                isEmpty = false;
-            }
-            if (cell.classList.contains('green')) {
-                isEmpty = false;
-            }
+    let row = activeInputRow;
+    if (!row) {
+        row = firstEmptyRow();
+        if (!row) {
+            showToast('空いている行がありません（行を長押しで打ち直し）');
+            return;
         }
-        if (isEmpty) {
-            startEditing(row);
-            break;
-        }
+        startEditing(row);
     }
-    const inputCells = activeInputRow.querySelectorAll('.cell');
-    for (let i = 0; i < 5; i++) {
-        inputCells[i].textContent = word[i];
-    }
-    validateAndFixWord(activeInputRow);
+    Array.from(row.children).forEach((cell, i) => {
+        cell.textContent = word[i];
+    });
+    currentInputPosition = 5;
+    updateCursor();
+    showToast(`${word.toUpperCase()} を入れました。「確定」で決定します`);
 }
 
-// 候補リストの表示/非表示を切り替える
-possibleWordsCountButton.addEventListener('click', (event) => {
-    possibleWordsCountButton.classList.add('hidden');
-    wordListContainer.classList.remove('hidden');
-});
-// 候補リストの表示/非表示を切り替える
+// 候補の一覧を開く・閉じる（横画面では常に表示されている）
+function openWordList() {
+    wordListPanel.classList.add('open');
+    sheetBackdrop.classList.add('open');
+    wordListContainer.scrollTop = 0;
+}
+
+function closeWordList() {
+    wordListPanel.classList.remove('open');
+    sheetBackdrop.classList.remove('open');
+}
+
+possibleWordsCountButton.addEventListener('click', openWordList);
+wordListCloseButton.addEventListener('click', closeWordList);
+sheetBackdrop.addEventListener('click', closeWordList);
 wordListContainer.addEventListener('click', (event) => {
-    // クリックされた要素が単語アイテム(.word-item)の場合
-    const wordItem = event.target.closest('.word-item');
+    // クリックされた要素が単語の場合だけ入力して閉じる（スクロールや余白のタップでは閉じない）
+    const wordItem = event.target.closest('[data-word]');
     if (wordItem) {
         addSelectedWordToInput(wordItem.dataset.word);
+        closeWordList();
     }
-    // 単語を選択した場合でも、背景をクリックした場合でもリストを非表示にする
-    wordListContainer.classList.add('hidden');
-    possibleWordsCountButton.classList.remove('hidden');
 });
 
 // 解答セクションを更新する関数
 function updateSolutionSection() {
-    const inputRows = document.querySelectorAll('#input-section .row');
     const greenLettersInPosition = Array(5).fill('');
     const yellowLetterSet = new Set();
 
     // 入力セクションから緑色と黄色の文字情報を収集
-    inputRows.forEach(row => {
+    rows.forEach(row => {
         const cells = row.querySelectorAll('.cell');
         cells.forEach((cell, index) => {
             const letter = cell.textContent.trim().toLowerCase();
@@ -460,72 +725,84 @@ function updateSolutionSection() {
             if (cell.classList.contains('green')) {
                 greenLettersInPosition[index] = letter;
             } else if (cell.classList.contains('yellow')) {
-                // 黄色の文字が既に含まれていないか確認してから追加
                 yellowLetterSet.add(letter);
             }
         });
     });
 
     // 黄色の文字リストから、緑色で確定した文字を除外する
-    const greenLetters = greenLettersInPosition.filter(letter => letter !== '');
-    greenLetters.forEach(letter => yellowLetterSet.delete(letter));
+    greenLettersInPosition.forEach(letter => yellowLetterSet.delete(letter));
     const yellowLetters = Array.from(yellowLetterSet);
 
-
     // 緑色のマスを更新
-    const greenCells = document.querySelectorAll('#solution-grid .green-row .cell');
-    greenCells.forEach((cell, index) => {
-        cell.textContent = greenLettersInPosition[index].toUpperCase() || '';
+    document.querySelectorAll('#solution-grid .green-row .tile').forEach((tile, index) => {
+        tile.textContent = greenLettersInPosition[index];
+        tile.classList.toggle('filled', !!greenLettersInPosition[index]);
     });
 
     // 黄色のマスを更新
-    const yellowCells = document.querySelectorAll('#solution-grid .yellow-row .cell');
-    yellowCells.forEach((cell, index) => {
-        cell.textContent = yellowLetters[index] ? yellowLetters[index].toUpperCase() : '';
+    document.querySelectorAll('#solution-grid .yellow-row .tile').forEach((tile, index) => {
+        tile.textContent = yellowLetters[index] || '';
+        tile.classList.toggle('filled', !!yellowLetters[index]);
     });
+
+    // 含まれない文字（灰色のみの文字）
+    const states = letterStates();
+    const excluded = Object.keys(states).filter(letter => states[letter] === 'gray').sort();
+    excludedLettersDiv.replaceChildren();
+    if (excluded.length > 0) {
+        const label = document.createElement('b');
+        label.textContent = '含まれない文字:';
+        excludedLettersDiv.replaceChildren(label, excluded.join(' ').toUpperCase());
+    }
 }
 
-// グリッドの初期状態を設定する関数
-function initializeGrid() {
-    fillStartingWords();
-    // 初期状態に基づいて候補単語と解答サマリーを更新
-    displayPossibleWords();
-    updateSolutionSection();
+// ダイアログの外側（背景）をクリックしたら閉じる
+function closeOnBackdropClick(dialog) {
+    dialog.addEventListener('click', event => {
+        if (event.target === dialog) dialog.close();
+    });
 }
 
 // アプリケーション起動時の初期化
 document.addEventListener('DOMContentLoaded', () => {
-    // スマホでの文字列選択を無効にする
-    document.body.style.webkitUserSelect = 'none';
-    document.body.style.mozUserSelect = 'none';
-    document.body.style.msUserSelect = 'none';
-    document.body.style.userSelect = 'none';
-
     startSolverWorker();   // ランキング計算用のWorkerを起動する
+    buildKeyboard();
     updateHardModeButton();
-    initializeGrid();      // グリッドを初期化する
+    updateContrastButton();
+    fillStartingWords();   // グリッドを初期化する
+    boardChanged();
 
     // 物理キーボード入力イベントリスナーを追加
-    document.addEventListener('keydown', handleKeyInput);
-    // ソフトウェアキーボード入力イベントリスナーを追加
-    hiddenInput.addEventListener('input', handleSoftwareKeyInput);
+    document.addEventListener('keydown', handlePhysicalKey);
 
-    // グリッド外クリックで編集をキャンセルするイベントリスナー
+    document.getElementById('reset-btn').addEventListener('click', resetBoard);
+    document.getElementById('help-btn').addEventListener('click', () => helpDialog.showModal());
+    document.getElementById('settings-btn').addEventListener('click', () => settingsDialog.showModal());
+    closeOnBackdropClick(helpDialog);
+    closeOnBackdropClick(settingsDialog);
+
+    // 初めて開いたときは使い方を表示する
+    if (!loadSetting('helpSeen')) {
+        helpDialog.showModal();
+        saveSetting('helpSeen', true);
+    }
+
+    // 盤面・キーボード・一覧の外をクリックしたら編集をキャンセルする
     document.addEventListener('click', (event) => {
-        // クリックされた要素が入力セクションやその子孫でない場合に編集をキャンセル
-        if (activeInputRow && !event.target.closest('.container')) {
+        if (activeInputRow && !event.target.closest('#input-section, #keyboard, #word-list-panel, #possible-words-count-btn, .toast, dialog')) {
             cancelEditing();
         }
     });
 
-    // 各行に長押しイベントを追加
-    document.querySelectorAll('#input-section .row').forEach(row => {
+    // 各行に長押しイベントを追加（長押しで打ち直し）
+    rows.forEach(row => {
         let pressTimer;
 
-        const startPress = (e) => {
+        const startPress = () => {
             // 固定された行でのみ長押しを有効にする
             if (row.classList.contains('fixed')) {
-                pressTimer = window.setTimeout(() => startEditing(row), 800);
+                pressTimer = window.setTimeout(() => startEditing(row), 600);
             }
         };
 
@@ -539,8 +816,9 @@ document.addEventListener('DOMContentLoaded', () => {
         row.addEventListener('mouseleave', cancelPress);
 
         // タッチイベント
-        row.addEventListener('touchstart', startPress);
+        row.addEventListener('touchstart', startPress, { passive: true });
         row.addEventListener('touchend', cancelPress);
+        row.addEventListener('touchmove', cancelPress, { passive: true });
         row.addEventListener('touchcancel', cancelPress);
     });
 });

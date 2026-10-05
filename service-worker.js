@@ -1,4 +1,4 @@
-const CACHE_NAME = 'wordle-solver-v2';
+const CACHE_NAME = 'wordle-solver-v4';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -21,6 +21,15 @@ self.addEventListener('install', event => {
         console.log('Opened cache');
         return cache.addAll(urlsToCache);
       })
+  );
+});
+
+// 古いバージョンのキャッシュを消す（残っていると caches.match が古いファイルを返す）
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(names => Promise.all(
+      names.filter(name => name !== CACHE_NAME).map(name => caches.delete(name))
+    ))
   );
 });
 

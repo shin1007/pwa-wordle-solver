@@ -1,12 +1,13 @@
-// ハードモードの「定跡」（1語目と、その色の出方ごとの2語目）を作る: node scripts/build-book.mjs [1語目...]
+// 「定跡」（1語目と、その色の出方ごとの2語目）を作る: node scripts/build-book.mjs normal|hard [1語目...]
 //   1語目の色の出方ごとに、おすすめ上位の2語目を実際に最後まで解かせて比べ、
 //   手数のコスト（5手以上・失敗を重く見る）が最小のものを選ぶ。
-//   1語目を複数渡すと全部作って比べ、最良のものを book.js に書き出す。
+//   1語目を複数渡すと全部作って比べ、最良のものを book.js に書き出す（もう一方のモードの定跡はそのまま残す）。
 // 単語リストや solver.js を変更したら再実行する（全コア使って数分〜十数分かかる）。
 import { writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { Solver, ALL_GREEN } from '../solver.js';
+import * as books from '../book.js';
 
 const SECOND_CANDIDATES = 25; // 比べる2語目の数（おすすめ上位から）
 
@@ -14,7 +15,7 @@ const SECOND_CANDIDATES = 25; // 比べる2語目の数（おすすめ上位か�
 const gameCost = n => n + 0.2 * Math.max(0, n - 4) + 10 * Math.max(0, n - 6);
 
 /** history の状態から guess を入れて、answer を解き切るまでの総手数 */
-function playOut(solver, history, guess, answer) {
+function playOut(solver, hard, history, guess, answer) {
     const h = [...history];
     let n = h.length;
     for (;;) {
@@ -22,18 +23,18 @@ function playOut(solver, history, guess, answer) {
         const p = solver.feedback(solver.index.get(guess), answer);
         if (p === ALL_GREEN || n > 10) return n;
         h.push({ word: guess, pattern: p });
-        guess = solver.rank(h, { hard: true, limit: 1 }).ranking[0].word;
+        guess = solver.rank(h, { hard, limit: 1 }).ranking[0].word;
     }
 }
 
 /** 1語目 opener がパターン pattern だった局面で、おすすめ上位の2語目を最後まで解かせて最良のものを選ぶ */
-function bestSecond(solver, opener, pattern) {
+function bestSecond(solver, hard, opener, pattern) {
     const history = [{ word: opener, pattern }];
     const answers = solver.candidates(history);
-    const options = solver.rank(history, { hard: true, limit: SECOND_CANDIDATES }).ranking.map(r => r.word);
+    const options = solver.rank(history, { hard, limit: SECOND_CANDIDATES }).ranking.map(r => r.word);
     let best = null;
     for (const word of options) {
-        const games = answers.map(a => playOut(solver, history, word, a));
+        const games = answers.map(a => playOut(solver, hard, history, word, a));
         const cost = games.reduce((s, n) => s + gameCost(n), 0);
         if (!best || cost < best.cost - 1e-9) best = { word, cost, games };
     }
@@ -43,12 +44,15 @@ function bestSecond(solver, opener, pattern) {
 if (!isMainThread) {
     const solver = new Solver();
     for (const [opener, pattern] of workerData.jobs) {
-        parentPort.postMessage(bestSecond(solver, opener, pattern));
+        parentPort.postMessage(bestSecond(solver, workerData.hard, opener, pattern));
     }
     process.exit(0);
 }
 
-const openers = process.argv.slice(2).length ? process.argv.slice(2) : ['crane'];
+const mode = process.argv[2];
+if (mode !== 'normal' && mode !== 'hard') throw new Error('使い方: node scripts/build-book.mjs normal|hard [1語目...]');
+const hard = mode === 'hard';
+const openers = process.argv.slice(3).length ? process.argv.slice(3) : ['tarse'];
 const solver = new Solver();
 
 // 1語目ごとの色の出方（正解リストに出現するもの）を並列で処理する
@@ -71,7 +75,7 @@ jobs.forEach((job, i) => buckets[i % threads].push(job));
 const results = new Map(openers.map(o => [o, []]));
 let done = 0;
 await Promise.all(buckets.map((bucket, t) => new Promise((resolve, reject) => {
-    const worker = new Worker(new URL(import.meta.url), { workerData: { jobs: bucket } });
+    const worker = new Worker(new URL(import.meta.url), { workerData: { jobs: bucket, hard } });
     let i = 0;
     worker.on('message', r => {
         results.get(bucket[i++][0]).push(r);
@@ -101,9 +105,12 @@ const second = {};
 for (const r of best.list.sort((a, b) => a.pattern - b.pattern)) {
     second[r.pattern] = { word: r.word, expected: +(r.games.reduce((s, n) => s + n, 0) / r.games.length - 1).toFixed(4) };
 }
-writeFileSync(new URL('../book.js', import.meta.url), `// scripts/build-book.mjs で生成（ハードモードの定跡）
-// opener: 1語目, expected: 1語目から平均何手で解けたか,
+const book = { hard, opener: best.opener, expected: +best.avg.toFixed(4), second };
+const result = { NORMAL_BOOK: books.NORMAL_BOOK ?? null, HARD_BOOK: books.HARD_BOOK ?? null, [hard ? 'HARD_BOOK' : 'NORMAL_BOOK']: book };
+writeFileSync(new URL('../book.js', import.meta.url), `// scripts/build-book.mjs で生成（通常モード / ハードモードの定跡）
+// hard: ハードモード用か, opener: 1語目, expected: 1語目から平均何手で解けたか,
 // second: 1語目の色パターン → 2語目と、その2語目を含めて平均あと何手で解けたか
-export const HARD_BOOK = ${JSON.stringify({ opener: best.opener, expected: +best.avg.toFixed(4), second })};
+export const NORMAL_BOOK = ${JSON.stringify(result.NORMAL_BOOK)};
+export const HARD_BOOK = ${JSON.stringify(result.HARD_BOOK)};
 `);
-console.log(`book.js: opener ${best.opener}`);
+console.log(`book.js: ${mode} opener ${best.opener}`);
