@@ -599,7 +599,7 @@ button {
 
 .key.wide {
     flex: 1.5;
-    font-size: 0.8rem;
+    font-size: 0.7rem;
 }
 
 .key:active {

@@ -283,6 +283,42 @@ function submitRow() {
     validateAndFixWord(activeInputRow);
 }
 
+// ほかの確定済みの行から分かっている緑・黄を、新しく入れた単語に引き継ぐ
+function inheritColors(word, row) {
+    const others = rows.filter(r => r !== row && r.classList.contains('fixed')).map(snapshotRow);
+    const colors = Array(5).fill('gray');
+
+    // 同じ列で同じ文字が緑になっていれば緑
+    for (let i = 0; i < 5; i++) {
+        if (others.some(cells => cells[i].color === 'green' && cells[i].letter.toLowerCase() === word[i])) {
+            colors[i] = 'green';
+        }
+    }
+
+    // 答えに含まれると分かっている文字は、分かっている個数まで黄にする
+    const knownCount = {};
+    others.forEach(cells => {
+        const count = {};
+        cells.forEach(({ letter, color }) => {
+            if (color === 'green' || color === 'yellow') {
+                const l = letter.toLowerCase();
+                count[l] = (count[l] || 0) + 1;
+            }
+        });
+        for (const l in count) knownCount[l] = Math.max(knownCount[l] || 0, count[l]);
+    });
+    for (let i = 0; i < 5; i++) {
+        if (colors[i] === 'green') knownCount[word[i]] = (knownCount[word[i]] || 0) - 1;
+    }
+    for (let i = 0; i < 5; i++) {
+        if (colors[i] === 'gray' && knownCount[word[i]] > 0) {
+            colors[i] = 'yellow';
+            knownCount[word[i]]--;
+        }
+    }
+    return colors;
+}
+
 // 入力された単語を検証し、行を固定する関数
 function validateAndFixWord(row) {
     const cells = Array.from(row.querySelectorAll('.cell'));
@@ -295,15 +331,16 @@ function validateAndFixWord(row) {
         return;
     }
 
-    // 同じ単語に打ち直した場合は元の色を残し、それ以外はグレーにする
+    // 同じ単語に打ち直した場合は元の色を残し、それ以外はほかの行から分かっている色を引き継ぐ
     const original = originalRowBeforeEdit;
     const keepColors = original && original.map(c => c.letter).join('').toLowerCase() === word;
+    const colors = keepColors ? original.map(c => c.color) : inheritColors(word, row);
 
     row.classList.add('fixed'); // 行を固定
     row.classList.remove('editing');
     // 色はすぐに付け、1マスずつめくる演出は CSS で行う（めくり終わるまで色を隠す）
     cells.forEach((cell, i) => {
-        setCellColor(cell, keepColors ? original[i].color : 'gray');
+        setCellColor(cell, colors[i]);
         cell.style.setProperty('--i', i);
         playAnimation(cell, 'flip');
     });
@@ -367,7 +404,7 @@ function buildKeyboard() {
 
         if (i === 1) rowDiv.appendChild(spacer());
         if (i === 2) {
-            const enterKey = createKey('Enter', '確定');
+            const enterKey = createKey('Enter', 'ENTER', '確定');
             enterKey.classList.add('wide');
             rowDiv.appendChild(enterKey);
         }
@@ -667,7 +704,7 @@ function resetBoard() {
     });
 }
 
-// 一覧で選んだ単語を入力欄に入れる（確定は「確定」キーで行う）
+// 一覧で選んだ単語を入力欄に入れる（確定は ENTER キーで行う）
 function addSelectedWordToInput(word) {
     let row = activeInputRow;
     if (!row) {
@@ -683,7 +720,7 @@ function addSelectedWordToInput(word) {
     });
     currentInputPosition = 5;
     updateCursor();
-    showToast(`${word.toUpperCase()} を入れました。「確定」で決定します`);
+    showToast(`${word.toUpperCase()} を入れました。ENTER で確定します`);
 }
 
 // 候補の一覧を開く・閉じる（横画面では常に表示されている）
