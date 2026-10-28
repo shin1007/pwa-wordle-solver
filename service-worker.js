@@ -1,4 +1,4 @@
-const CACHE_NAME = 'wordle-solver-v7';
+const CACHE_NAME = 'wordle-solver-v8';
 const urlsToCache = [
   '/',
   '/index.html',
