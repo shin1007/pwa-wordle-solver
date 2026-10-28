@@ -704,7 +704,7 @@ function resetBoard() {
     });
 }
 
-// 一覧で選んだ単語を入力欄に入れる（確定は ENTER キーで行う）
+// おすすめ・一覧の単語を入力欄に入れて、ENTER なしでそのまま確定する
 function addSelectedWordToInput(word) {
     let row = activeInputRow;
     if (!row) {
@@ -720,7 +720,7 @@ function addSelectedWordToInput(word) {
     });
     currentInputPosition = 5;
     updateCursor();
-    showToast(`${word.toUpperCase()} を入れました。ENTER で確定します`);
+    validateAndFixWord(row);
 }
 
 // 候補の一覧を開く・閉じる（横画面では常に表示されている）
@@ -735,11 +735,40 @@ function closeWordList() {
     sheetBackdrop.classList.remove('open');
 }
 
-possibleWordsCountButton.addEventListener('click', openWordList);
+// 「次のおすすめ」: タップで一覧を開き、長押しでその単語を入力して確定する
+const LONG_PRESS_MS = 500;
+let bestPressTimer = null;
+let bestLongPressed = false;
+
+function cancelBestPress() {
+    clearTimeout(bestPressTimer);
+}
+
+possibleWordsCountButton.addEventListener('pointerdown', () => {
+    bestLongPressed = false;
+    cancelBestPress();
+    bestPressTimer = window.setTimeout(() => {
+        const word = bestWordSpan.textContent.trim();
+        if (!validWords.has(word)) return;
+        bestLongPressed = true;
+        navigator.vibrate?.(30);
+        addSelectedWordToInput(word);
+    }, LONG_PRESS_MS);
+});
+['pointerup', 'pointerleave', 'pointercancel'].forEach(type =>
+    possibleWordsCountButton.addEventListener(type, cancelBestPress));
+possibleWordsCountButton.addEventListener('contextmenu', event => event.preventDefault());
+possibleWordsCountButton.addEventListener('click', () => {
+    if (bestLongPressed) {
+        bestLongPressed = false; // 長押しの直後のクリックでは一覧を開かない
+        return;
+    }
+    openWordList();
+});
 wordListCloseButton.addEventListener('click', closeWordList);
 sheetBackdrop.addEventListener('click', closeWordList);
 wordListContainer.addEventListener('click', (event) => {
-    // クリックされた要素が単語の場合だけ入力して閉じる（スクロールや余白のタップでは閉じない）
+    // クリックされた要素が単語の場合だけ入力・確定して閉じる（スクロールや余白のタップでは閉じない）
     const wordItem = event.target.closest('[data-word]');
     if (wordItem) {
         addSelectedWordToInput(wordItem.dataset.word);

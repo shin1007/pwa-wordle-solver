@@ -874,3 +874,9 @@ button {
         transition-duration: 0.01ms !important;
     }
 }
+
+#possible-words-count-btn {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
