@@ -13,7 +13,6 @@ const wordListContainer = document.getElementById('word-list-container');
 const wordListCloseButton = document.getElementById('word-list-close');
 const sheetBackdrop = document.getElementById('sheet-backdrop');
 const possibleWordsCountButton = document.getElementById('possible-words-count-btn');
-const excludedLettersDiv = document.getElementById('excluded-letters');
 const keyboard = document.getElementById('keyboard');
 const toast = document.getElementById('toast');
 const helpDialog = document.getElementById('help-dialog');
@@ -94,10 +93,9 @@ function hideToast() {
     toast.classList.remove('show');
 }
 
-// 盤面が変わったら、候補・まとめ・キーボードの色を更新する
+// 盤面が変わったら、候補・キーボードの色を更新する
 function boardChanged() {
     displayPossibleWords();
-    updateSolutionSection();
     updateKeyboard();
 }
 
@@ -775,53 +773,6 @@ wordListContainer.addEventListener('click', (event) => {
         closeWordList();
     }
 });
-
-// 解答セクションを更新する関数
-function updateSolutionSection() {
-    const greenLettersInPosition = Array(5).fill('');
-    const yellowLetterSet = new Set();
-
-    // 入力セクションから緑色と黄色の文字情報を収集
-    rows.forEach(row => {
-        const cells = row.querySelectorAll('.cell');
-        cells.forEach((cell, index) => {
-            const letter = cell.textContent.trim().toLowerCase();
-            if (!letter) return;
-
-            if (cell.classList.contains('green')) {
-                greenLettersInPosition[index] = letter;
-            } else if (cell.classList.contains('yellow')) {
-                yellowLetterSet.add(letter);
-            }
-        });
-    });
-
-    // 黄色の文字リストから、緑色で確定した文字を除外する
-    greenLettersInPosition.forEach(letter => yellowLetterSet.delete(letter));
-    const yellowLetters = Array.from(yellowLetterSet);
-
-    // 緑色のマスを更新
-    document.querySelectorAll('#solution-grid .green-row .tile').forEach((tile, index) => {
-        tile.textContent = greenLettersInPosition[index];
-        tile.classList.toggle('filled', !!greenLettersInPosition[index]);
-    });
-
-    // 黄色のマスを更新
-    document.querySelectorAll('#solution-grid .yellow-row .tile').forEach((tile, index) => {
-        tile.textContent = yellowLetters[index] || '';
-        tile.classList.toggle('filled', !!yellowLetters[index]);
-    });
-
-    // 含まれない文字（灰色のみの文字）
-    const states = letterStates();
-    const excluded = Object.keys(states).filter(letter => states[letter] === 'gray').sort();
-    excludedLettersDiv.replaceChildren();
-    if (excluded.length > 0) {
-        const label = document.createElement('b');
-        label.textContent = '含まれない文字:';
-        excludedLettersDiv.replaceChildren(label, excluded.join(' ').toUpperCase());
-    }
-}
 
 // ダイアログの外側（背景）をクリックしたら閉じる
 function closeOnBackdropClick(dialog) {

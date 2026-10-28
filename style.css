@@ -145,7 +145,7 @@ button {
     stroke-linejoin: round;
 }
 
-/* レイアウト（縦画面：盤面 → まとめ・おすすめ → キーボード） */
+/* レイアウト（縦画面：盤面 → おすすめ → キーボード） */
 .layout {
     flex: 1;
     min-height: 0;
@@ -173,7 +173,7 @@ button {
     order: 1;
     flex: none;
     align-self: center;
-    width: min(100%, 380px, max(200px, 100dvh - 410px));
+    width: min(100%, 420px, max(200px, 100dvh - 300px));
     aspect-ratio: 1;
     display: grid;
     grid-template-rows: repeat(5, 1fr);
@@ -220,36 +220,6 @@ button {
 .cell.yellow, .tile.yellow.filled { background-color: var(--yellow); color: var(--on-color); border-color: var(--yellow); }
 .cell.gray, .tile.gray.filled { background-color: var(--gray); color: var(--on-color); border-color: var(--gray); }
 
-/* 判明した文字のまとめ */
-#solution-section {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-#solution-grid {
-    display: flex;
-    gap: 14px;
-}
-
-.summary-group {
-    flex: 1;
-    min-width: 0;
-    container-type: inline-size;
-}
-
-.summary-caption {
-    font-size: 0.7rem;
-    color: var(--muted);
-    margin-bottom: 3px;
-}
-
-.green-row, .yellow-row {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 4px;
-}
-
 .tile {
     aspect-ratio: 1;
     display: grid;
@@ -260,19 +230,6 @@ button {
     border-radius: 3px;
     border: 2px dashed var(--border);
     color: var(--text);
-}
-
-.excluded-letters {
-    font-size: 0.8rem;
-    color: var(--muted);
-    letter-spacing: 0.08em;
-    min-height: 1.2em;
-}
-
-.excluded-letters b {
-    font-weight: normal;
-    letter-spacing: normal;
-    margin-right: 6px;
 }
 
 /* 次のおすすめボタン */
@@ -773,7 +730,7 @@ button {
     transform: translateX(18px);
 }
 
-/* 横画面のレイアウト（左：盤面とキーボード、右：まとめと候補の一覧） */
+/* 横画面のレイアウト（左：盤面とキーボード、右：候補の一覧） */
 @media (min-width: 900px) {
     .layout {
         flex-direction: row;
